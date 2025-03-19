@@ -316,6 +316,24 @@ export const useGameStore = create<GameStore>((set, get) => ({
     });
   },
 
+  resolveChallenge: (successful: boolean) => {
+    const { pendingAction, players } = get();
+    if (!pendingAction) return;
+
+    const challengedPlayerId = pendingAction.blockingPlayerId || pendingAction.sourcePlayerId;
+    const challengedPlayer = players.find(p => p.id === challengedPlayerId);
+
+    if (!challengedPlayer) return;
+
+    if (successful) {
+      // Challenger was correct, challenged player loses influence
+      set({ playerToLoseInfluence: challengedPlayerId });
+    } else {
+      // Challenger was wrong, challenger loses influence
+      set({ playerToLoseInfluence: pendingAction.sourcePlayerId });
+    }
+  },
+
   resetGame: () => {
     set({
       players: [],
