@@ -18,6 +18,7 @@ export type ActionState =
   | 'resolving_block'
   | 'resolving_challenge'
   | 'selecting_influence_to_lose'
+  | 'selecting_influence_to_exchange'
   | 'complete';
 
 export interface Card {
@@ -54,6 +55,8 @@ export interface GameState {
   winner: string | null;
   pendingAction: PendingAction | null;
   playerToLoseInfluence: string | null;
+  exchangeCards: Character[];
+  gameHistory: GameEvent[];
 }
 
 export interface CharacterAbility {
@@ -62,6 +65,23 @@ export interface CharacterAbility {
   blockableBy: Character[];
   description: ReactNode;
 }
+
+export type GameEvent = {
+  type: 'action' | 'block' | 'challenge' | 'reveal' | 'exchange';
+  playerId: string;
+  targetPlayerId?: string;
+  details: string;
+  timestamp: number;
+};
+
+export type ChallengeResult = {
+  challengerId: string;
+  challengedId: string;
+  successful: boolean;
+  lostInfluence?: Character;
+};
+
+export type TargetedAction = Extract<Action, 'steal' | 'assassinate' | 'coup'>;
 
 export const CHARACTER_ABILITIES: CharacterAbility[] = [
   {
@@ -87,14 +107,27 @@ export const CHARACTER_ABILITIES: CharacterAbility[] = [
     action: 'exchange',
     blockableBy: [],
     description: 'Exchange cards with the court deck'
+  },
+  {
+    character: 'Contessa',
+    action: 'block',
+    blockableBy: [],
+    description: 'Block assassination attempts'
   }
 ];
 
-export const BLOCK_WINDOW_MS = 5000; // 5 seconds to block
-export const CHALLENGE_WINDOW_MS = 5000; // 5 seconds to challenge
+export const BLOCK_WINDOW_MS = 5000;
+export const CHALLENGE_WINDOW_MS = 5000;
 
 export const getInitialDeck = (playerCount: number): Character[] => {
-  const charactersPerType = playerCount > 5 ? 5 : 3;
+  const charactersPerType = playerCount > 6 ? 5 : 3;
   const characters: Character[] = ['Duke', 'Assassin', 'Contessa', 'Captain', 'Ambassador'];
   return characters.flatMap(char => Array(charactersPerType).fill(char));
 };
+
+export type ExchangeStep = 'select' | 'confirm';
+
+export interface InfluenceSelectionProps {
+  isExchange?: boolean;
+  maxSelection?: number;
+}

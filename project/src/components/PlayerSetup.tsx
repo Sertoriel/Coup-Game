@@ -33,7 +33,7 @@ export const PlayerSetup = () => {
           />
           <button
             type="submit"
-            disabled={players.length >= 4 || !playerName.trim()}
+            disabled={players.length >= 6 || !playerName.trim()}
             className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
           >
             Add

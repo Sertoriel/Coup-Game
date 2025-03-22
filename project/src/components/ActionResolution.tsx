@@ -1,34 +1,42 @@
 import React, { useEffect, useState } from 'react';
 import { useGameStore } from '../store/gameStore';
-import { Shield, AlertTriangle } from 'lucide-react';
+import { Shield, AlertTriangle, User, Crosshair } from 'lucide-react';
+import { Character, Action } from '../types/game';
 
 export const ActionResolution = () => {
-  const { pendingAction, players, blockAction, challengeAction, completeAction, selectTarget } = useGameStore();
+  const { 
+    pendingAction, 
+    players,
+    currentPlayerIndex,
+    blockAction,
+    challengeAction,
+    completeAction
+  } = useGameStore();
+  
   const [timeLeft, setTimeLeft] = useState<number>(0);
-
+  const currentPlayer = players[currentPlayerIndex];
+  
   useEffect(() => {
-    if (!pendingAction || !pendingAction.blockWindow) return;
+    if (!pendingAction) return;
 
-    if (pendingAction.state === 'waiting_for_blocks' || pendingAction.state === 'waiting_for_challenges') {
-      const timer = pendingAction.state === 'waiting_for_blocks' 
-        ? pendingAction.blockWindow 
-        : pendingAction.challengeWindow;
-      
-      setTimeLeft(timer);
+    const timer = pendingAction.state === 'waiting_for_blocks' 
+      ? pendingAction.blockWindow 
+      : pendingAction.challengeWindow;
 
-      const interval = setInterval(() => {
-        setTimeLeft(prev => {
-          if (prev <= 1000) {
-            clearInterval(interval);
-            completeAction();
-            return 0;
-          }
-          return prev - 1000;
-        });
-      }, 1000);
+    setTimeLeft(timer || 0);
 
-      return () => clearInterval(interval);
-    }
+    const interval = setInterval(() => {
+      setTimeLeft(prev => {
+        if (prev <= 1000) {
+          clearInterval(interval);
+          completeAction();
+          return 0;
+        }
+        return prev - 1000;
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
   }, [pendingAction]);
 
   if (!pendingAction) return null;
@@ -38,114 +46,163 @@ export const ActionResolution = () => {
     ? players.find(p => p.id === pendingAction.targetPlayerId)
     : null;
 
-  const otherPlayers = players.filter(p => p.id !== pendingAction.sourcePlayerId);
+  // Determina quem pode bloquear/desafiar
+  const getAllowedParticipants = () => {
+    if (!pendingAction) return { blockers: [], challengers: [] };
 
-  const renderActionDescription = () => {
-    if (!sourcePlayer) return null;
+    let blockers: string[] = [];
+    let challengers: string[] = [];
 
     switch (pendingAction.type) {
+      case 'foreign_aid':
+        blockers = players.map(p => p.id);
+        challengers = [];
+        break;
       case 'tax':
-        return `${sourcePlayer.name} is taking tax as Duke`;
+      case 'exchange':
+        challengers = players.map(p => p.id);
+        break;
       case 'steal':
-        return targetPlayer 
-          ? `${sourcePlayer.name} is stealing from ${targetPlayer.name} as Captain`
-          : `${sourcePlayer.name} is attempting to steal as Captain`;
       case 'assassinate':
-        return targetPlayer
-          ? `${sourcePlayer.name} is assassinating ${targetPlayer.name}`
-          : `${sourcePlayer.name} is attempting to assassinate`;
+        blockers = [pendingAction.targetPlayerId!];
+        challengers = [pendingAction.targetPlayerId!];
+        break;
       default:
-        return `${sourcePlayer.name} is performing ${pendingAction.type}`;
+        break;
     }
+
+    return { blockers, challengers };
   };
 
-  if (pendingAction.state === 'selecting_target') {
-    return (
-      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
-        <div className="bg-white rounded-xl p-6 max-w-md w-full">
-          <h3 className="text-xl font-bold mb-4">Select a target</h3>
-          <div className="space-y-2">
-            {otherPlayers.map(player => (
-              <button
-                key={player.id}
-                onClick={() => selectTarget(player.id)}
-                className="w-full p-3 bg-gray-100 rounded-lg hover:bg-gray-200 flex items-center justify-between"
-              >
-                <span>{player.name}</span>
-                <span>{player.coins} coins</span>
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-    );
-  }
+  const { blockers, challengers } = getAllowedParticipants();
+  const canBlock = blockers.includes(currentPlayer.id);
+  const canChallenge = challengers.includes(currentPlayer.id);
 
-  return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
-      <div className="bg-white rounded-xl p-6 max-w-md w-full">
-        <h3 className="text-xl font-bold mb-4">{renderActionDescription()}</h3>
-        
-        {pendingAction.state === 'waiting_for_blocks' && (
-          <div className="space-y-4">
-            <p className="text-gray-600">
-              Time to block: {Math.ceil(timeLeft / 1000)}s
-            </p>
-            <div className="grid grid-cols-1 gap-3">
-              {pendingAction.type === 'foreign_aid' && (
-                <button
-                  onClick={() => blockAction(sourcePlayer.id, 'Duke')}
-                  className="flex items-center justify-center gap-2 p-3 bg-blue-100 rounded-lg hover:bg-blue-200"
-                >
-                  <Shield className="w-5 h-5" />
-                  Block as Duke
-                </button>
-              )}
-              {pendingAction.type === 'steal' && (
-                <>
-                  <button
-                    onClick={() => blockAction(sourcePlayer.id, 'Captain')}
-                    className="flex items-center justify-center gap-2 p-3 bg-blue-100 rounded-lg hover:bg-blue-200"
-                  >
-                    <Shield className="w-5 h-5" />
-                    Block as Captain
-                  </button>
-                  <button
-                    onClick={() => blockAction(sourcePlayer.id, 'Ambassador')}
-                    className="flex items-center justify-center gap-2 p-3 bg-green-100 rounded-lg hover:bg-green-200"
-                  >
-                    <Shield className="w-5 h-5" />
-                    Block as Ambassador
-                  </button>
-                </>
-              )}
-              {pendingAction.type === 'assassinate' && (
-                <button
-                  onClick={() => blockAction(sourcePlayer.id, 'Contessa')}
-                  className="flex items-center justify-center gap-2 p-3 bg-purple-100 rounded-lg hover:bg-purple-200"
-                >
-                  <Shield className="w-5 h-5" />
-                  Block as Contessa
-                </button>
-              )}
+  const renderActionDetails = () => {
+    if (!sourcePlayer) return null;
+
+    const actionMap: Record<Action, string> = {
+      income: 'Taking income',
+      foreign_aid: 'Taking foreign aid',
+      coup: 'Performing coup',
+      tax: 'Collecting tax as Duke',
+      assassinate: 'Assassinating',
+      steal: 'Stealing',
+      exchange: 'Exchanging cards'
+    };
+
+    return (
+      <div className="mb-4">
+        <div className="flex items-center gap-3 bg-gray-100 p-3 rounded-lg">
+          <User className="w-5 h-5" />
+          <span className="font-semibold">{sourcePlayer.name}</span>
+          <span className="text-gray-600">{actionMap[pendingAction.type]}</span>
+          {targetPlayer && (
+            <>
+              <Crosshair className="w-5 h-5" />
+              <span className="font-semibold">{targetPlayer.name}</span>
+            </>
+          )}
+        </div>
+
+        {pendingAction.blockingPlayerId && (
+          <div className="mt-3 bg-blue-100 p-3 rounded-lg">
+            <div className="flex items-center gap-2">
+              <Shield className="w-5 h-5 text-blue-600" />
+              <span>
+                {players.find(p => p.id === pendingAction.blockingPlayerId)?.name}
+                {' '}blocked as {pendingAction.blockingCharacter}
+              </span>
             </div>
           </div>
         )}
 
-        {pendingAction.state === 'waiting_for_challenges' && (
-          <div className="space-y-4">
-            <p className="text-gray-600">
-              Time to challenge: {Math.ceil(timeLeft / 1000)}s
-            </p>
-            <button
-              onClick={() => challengeAction(sourcePlayer.id)}
-              className="w-full flex items-center justify-center gap-2 p-3 bg-red-100 rounded-lg hover:bg-red-200"
-            >
-              <AlertTriangle className="w-5 h-5" />
-              Challenge
-            </button>
+        {pendingAction.challengingPlayerId && (
+          <div className="mt-3 bg-red-100 p-3 rounded-lg">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-5 h-5 text-red-600" />
+              <span>
+                {players.find(p => p.id === pendingAction.challengingPlayerId)?.name}
+                {' '}challenged the action!
+              </span>
+            </div>
           </div>
         )}
+      </div>
+    );
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
+      <div className="bg-white rounded-xl p-6 max-w-md w-full">
+        <h3 className="text-xl font-bold mb-4">Action Resolution</h3>
+        
+        {renderActionDetails()}
+
+        <div className="space-y-4">
+          {(pendingAction.state === 'waiting_for_blocks' && canBlock) && (
+            <>
+              <p className="text-gray-600">
+                Time to block: {Math.ceil(timeLeft / 1000)}s
+              </p>
+              <div className="grid grid-cols-1 gap-3">
+                {pendingAction.type === 'foreign_aid' && (
+                  <button
+                    onClick={() => blockAction(currentPlayer.id, 'Duke')}
+                    className="flex items-center justify-center gap-2 p-3 bg-blue-100 rounded-lg hover:bg-blue-200"
+                  >
+                    <Shield className="w-5 h-5" />
+                    Block as Duke
+                  </button>
+                )}
+
+                {pendingAction.type === 'steal' && (
+                  <>
+                    <button
+                      onClick={() => blockAction(currentPlayer.id, 'Captain')}
+                      className="flex items-center justify-center gap-2 p-3 bg-blue-100 rounded-lg hover:bg-blue-200"
+                    >
+                      <Shield className="w-5 h-5" />
+                      Block as Captain
+                    </button>
+                    <button
+                      onClick={() => blockAction(currentPlayer.id, 'Ambassador')}
+                      className="flex items-center justify-center gap-2 p-3 bg-green-100 rounded-lg hover:bg-green-200"
+                    >
+                      <Shield className="w-5 h-5" />
+                      Block as Ambassador
+                    </button>
+                  </>
+                )}
+
+                {pendingAction.type === 'assassinate' && (
+                  <button
+                    onClick={() => blockAction(currentPlayer.id, 'Contessa')}
+                    className="flex items-center justify-center gap-2 p-3 bg-purple-100 rounded-lg hover:bg-purple-200"
+                  >
+                    <Shield className="w-5 h-5" />
+                    Block as Contessa
+                  </button>
+                )}
+              </div>
+            </>
+          )}
+
+          {(pendingAction.state === 'waiting_for_challenges' && canChallenge) && (
+            <div className="space-y-4">
+              <p className="text-gray-600">
+                Time to challenge: {Math.ceil(timeLeft / 1000)}s
+              </p>
+              <button
+                onClick={() => challengeAction(currentPlayer.id)}
+                className="w-full flex items-center justify-center gap-2 p-3 bg-red-100 rounded-lg hover:bg-red-200"
+              >
+                <AlertTriangle className="w-5 h-5" />
+                Challenge as {currentPlayer.name}
+              </button>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

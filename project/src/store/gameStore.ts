@@ -1,5 +1,17 @@
 import { create } from 'zustand';
-import { Character, GameState, Player, Action, PendingAction, CHARACTER_ABILITIES, BLOCK_WINDOW_MS, CHALLENGE_WINDOW_MS, getInitialDeck } from '../types/game';
+import {
+  Character,
+  GameState,
+  Player,
+  Action,
+  PendingAction,
+  CHARACTER_ABILITIES,
+  BLOCK_WINDOW_MS,
+  CHALLENGE_WINDOW_MS,
+  getInitialDeck,
+  GameEvent,
+  ChallengeResult
+} from '../types/game';
 
 const INITIAL_COINS = 2;
 
@@ -17,6 +29,7 @@ interface GameStore extends GameState {
   loseInfluence: (playerId: string, cardIndex: number) => void;
   completeAction: () => void;
   drawCard: () => Character;
+  completeExchange: (selectedIndices: number[]) => void;
 }
 
 const shuffleArray = <T>(array: T[]): T[] => {
@@ -41,10 +54,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
   winner: null,
   pendingAction: null,
   playerToLoseInfluence: null,
+  exchangeCards: [],
+  gameHistory: [],
 
   addPlayer: (name) => {
-    if (get().players.length >= 10) return;
-    
+    if (get().players.length >= 6) return;
+
     const newPlayer: Player = {
       id: crypto.randomUUID(),
       name,
@@ -60,7 +75,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   startGame: () => {
     const { players } = get();
     if (players.length < 2) return;
-    
+
     const deck = shuffleArray(getInitialDeck(players.length));
     set({ gameStarted: true, deck });
     get().drawInitialCards();
@@ -68,13 +83,17 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   drawCard: () => {
     const { deck, discardPile } = get();
-    if (deck.length === 0) {
-      // Shuffle discard pile back into deck
-      const newDeck = shuffleArray([...discardPile]);
+    let newDeck = [...deck];
+
+    if (newDeck.length === 0 && discardPile.length > 0) {
+      newDeck = shuffleArray(discardPile);
       set({ deck: newDeck, discardPile: [] });
     }
-    const card = get().deck.pop()!;
-    set(state => ({ deck: state.deck }));
+
+    if (newDeck.length === 0) throw new Error('No cards available');
+
+    const card = newDeck.pop()!;
+    set({ deck: newDeck });
     return card;
   },
 
@@ -94,10 +113,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
   initiateAction: (action: Action, character?: Character) => {
     const { players, currentPlayerIndex } = get();
     const currentPlayer = players[currentPlayerIndex];
-    
+
+    if (currentPlayer.influences.every(c => c.revealed)) return;
+
     const ability = CHARACTER_ABILITIES.find(a => a.action === action);
     const requiresCharacter = Boolean(ability);
-    
+
     if (requiresCharacter && !character) {
       console.error('Character required for this action');
       return;
@@ -114,6 +135,18 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
     if (['assassinate', 'coup', 'steal'].includes(action)) {
       pendingAction.state = 'selecting_target';
+    }
+
+    if (action === 'exchange') {
+      const newCards = [get().drawCard(), get().drawCard()];
+      set({
+        exchangeCards: newCards,
+        pendingAction: {
+          ...pendingAction,
+          state: 'selecting_influence_to_exchange'
+        }
+      });
+      return;
     }
 
     set({ pendingAction });
@@ -134,6 +167,27 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
 
   blockAction: (playerId: string, character: Character) => {
+    const { pendingAction, players } = get();
+    if (!pendingAction) return;
+
+    let allowedBlockers: string[] = [];
+    switch (pendingAction.type) {
+      case 'foreign_aid':
+        allowedBlockers = players.map(p => p.id);
+        break;
+      case 'steal':
+      case 'assassinate':
+        allowedBlockers = [pendingAction.targetPlayerId!];
+        break;
+      default:
+        allowedBlockers = [];
+    }
+
+    if (!allowedBlockers.includes(playerId)) {
+      console.error('Block not allowed for this player');
+      return;
+    }
+
     set(state => ({
       pendingAction: state.pendingAction ? {
         ...state.pendingAction,
@@ -148,6 +202,25 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const { pendingAction, players } = get();
     if (!pendingAction) return;
 
+    let allowedChallengers: string[] = [];
+    switch (pendingAction.type) {
+      case 'tax':
+      case 'exchange':
+        allowedChallengers = players.map(p => p.id);
+        break;
+      case 'steal':
+      case 'assassinate':
+        allowedChallengers = [pendingAction.targetPlayerId!];
+        break;
+      default:
+        allowedChallengers = [];
+    }
+
+    if (!allowedChallengers.includes(challengingPlayerId)) {
+      console.error('Challenge not allowed for this player');
+      return;
+    }
+
     const challengedPlayerId = pendingAction.blockingPlayerId || pendingAction.sourcePlayerId;
     const challengedPlayer = players.find(p => p.id === challengedPlayerId);
     const claimedCharacter = pendingAction.blockingCharacter || pendingAction.character;
@@ -155,12 +228,20 @@ export const useGameStore = create<GameStore>((set, get) => ({
     if (!challengedPlayer || !claimedCharacter) return;
 
     const hasClaimedCard = hasCharacter(challengedPlayer, claimedCharacter);
+    const event: GameEvent = {
+      type: 'challenge',
+      playerId: challengingPlayerId,
+      targetPlayerId: challengedPlayerId,
+      details: `Challenged ${claimedCharacter} claim`,
+      timestamp: Date.now()
+    };
 
     if (hasClaimedCard) {
-      // Challenger loses influence
-      set({ playerToLoseInfluence: challengingPlayerId });
-      
-      // Return claimed card to deck and draw new one
+      set(state => ({
+        playerToLoseInfluence: challengingPlayerId,
+        gameHistory: [...state.gameHistory, event]
+      }));
+
       const playerIndex = players.findIndex(p => p.id === challengedPlayerId);
       const cardIndex = challengedPlayer.influences.findIndex(
         card => !card.revealed && card.character === claimedCharacter
@@ -176,8 +257,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
         }));
       }
     } else {
-      // Challenged player loses influence
-      set({ playerToLoseInfluence: challengedPlayerId });
+      set(state => ({
+        playerToLoseInfluence: challengedPlayerId,
+        gameHistory: [...state.gameHistory, event]
+      }));
     }
   },
 
@@ -189,37 +272,82 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const updatedPlayers = players.map(p =>
       p.id === playerId
         ? {
-            ...p,
-            influences: p.influences.map((card, index) =>
-              index === cardIndex
-                ? { ...card, revealed: true }
-                : card
-            )
-          }
+          ...p,
+          influences: p.influences.map((card, index) =>
+            index === cardIndex
+              ? { ...card, revealed: true }
+              : card
+          )
+        }
         : p
     );
 
+    const activeInfluences = updatedPlayers.find(p => p.id === playerId)
+      ?.influences.filter(c => !c.revealed).length || 0;
+
     const revealedCard = player.influences[cardIndex].character;
+    const event: GameEvent = {
+      type: 'reveal',
+      playerId,
+      details: `Revealed ${revealedCard}`,
+      timestamp: Date.now()
+    };
+
     set(state => ({
       players: updatedPlayers,
       playerToLoseInfluence: null,
-      discardPile: [...state.discardPile, revealedCard]
+      discardPile: [...state.discardPile, revealedCard],
+      gameHistory: [...state.gameHistory, event]
     }));
 
-    // Check for game over
-    const activePlayers = updatedPlayers.filter(player =>
-      player.influences.some(card => !card.revealed)
-    );
+    if (activeInfluences === 0) {
+      set(state => ({
+        players: state.players.filter(p => p.id !== playerId)
+      }));
 
-    if (activePlayers.length === 1) {
-      set({ winner: activePlayers[0].id });
-    } else if (pendingAction?.blockingPlayerId && hasCharacter(player, pendingAction.blockingCharacter!)) {
-      // If it was a challenge against a block and the blocker was right
+      if (get().players.length === 1) {
+        set({ winner: get().players[0].id });
+        return;
+      }
+    }
+
+    if (pendingAction?.blockingPlayerId && hasCharacter(player, pendingAction.blockingCharacter!)) {
       set({ pendingAction: null });
       get().nextTurn();
     } else {
       get().completeAction();
     }
+  },
+
+  completeExchange: (selectedIndices: number[]) => {
+    const { players, currentPlayerIndex, exchangeCards } = get();
+    const currentPlayer = players[currentPlayerIndex];
+
+    const allCards = [...currentPlayer.influences.map(c => c.character), ...exchangeCards];
+    const selectedCards = selectedIndices.map(i => allCards[i]);
+    const returnedCards = allCards.filter((_, i) => !selectedIndices.includes(i));
+
+    const updatedPlayers = players.map(p =>
+      p.id === currentPlayer.id ? {
+        ...p,
+        influences: selectedCards.map(c => ({ character: c, revealed: false }))
+      } : p
+    );
+
+    const event: GameEvent = {
+      type: 'exchange',
+      playerId: currentPlayer.id,
+      details: `Exchanged ${returnedCards.length} cards`,
+      timestamp: Date.now()
+    };
+
+    set({
+      players: updatedPlayers,
+      deck: [...get().deck, ...returnedCards],
+      exchangeCards: [],
+      gameHistory: [...get().gameHistory, event]
+    });
+    get().nextTurn();
   },
 
   completeAction: () => {
@@ -239,64 +367,51 @@ export const useGameStore = create<GameStore>((set, get) => ({
       ? players.findIndex(p => p.id === targetPlayer.id)
       : -1;
 
+    const event: GameEvent = {
+      type: 'action',
+      playerId: sourcePlayer.id,
+      targetPlayerId: targetPlayer?.id,
+      details: `Performed ${pendingAction.type}`,
+      timestamp: Date.now()
+    };
+
     switch (pendingAction.type) {
       case 'income':
-        updatedPlayers[sourceIndex] = {
-          ...sourcePlayer,
-          coins: sourcePlayer.coins + 1
-        };
+        updatedPlayers[sourceIndex].coins += 1;
         break;
-
       case 'foreign_aid':
-        updatedPlayers[sourceIndex] = {
-          ...sourcePlayer,
-          coins: sourcePlayer.coins + 2
-        };
+        updatedPlayers[sourceIndex].coins += 2;
         break;
-
       case 'tax':
-        updatedPlayers[sourceIndex] = {
-          ...sourcePlayer,
-          coins: sourcePlayer.coins + 3
-        };
+        updatedPlayers[sourceIndex].coins += 3;
         break;
-
       case 'steal':
         if (targetPlayer && targetIndex !== -1) {
           const stealAmount = Math.min(2, targetPlayer.coins);
-          updatedPlayers[sourceIndex] = {
-            ...sourcePlayer,
-            coins: sourcePlayer.coins + stealAmount
-          };
-          updatedPlayers[targetIndex] = {
-            ...targetPlayer,
-            coins: targetPlayer.coins - stealAmount
-          };
+          updatedPlayers[sourceIndex].coins += stealAmount;
+          updatedPlayers[targetIndex].coins -= stealAmount;
         }
         break;
-
       case 'assassinate':
         if (targetPlayer && targetIndex !== -1) {
-          updatedPlayers[sourceIndex] = {
-            ...sourcePlayer,
-            coins: sourcePlayer.coins - 3
-          };
+          updatedPlayers[sourceIndex].coins -= 3;
           set({ playerToLoseInfluence: targetPlayer.id });
         }
         break;
-
       case 'coup':
         if (targetPlayer && targetIndex !== -1) {
-          updatedPlayers[sourceIndex] = {
-            ...sourcePlayer,
-            coins: sourcePlayer.coins - 7
-          };
+          updatedPlayers[sourceIndex].coins -= 7;
           set({ playerToLoseInfluence: targetPlayer.id });
         }
         break;
     }
 
-    set({ players: updatedPlayers, pendingAction: null });
+    set({
+      players: updatedPlayers,
+      pendingAction: null,
+      gameHistory: [...get().gameHistory, event]
+    });
+
     if (!get().playerToLoseInfluence) {
       get().nextTurn();
     }
@@ -308,7 +423,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       let nextIndex = (state.currentPlayerIndex + 1) % players.length;
       while (
         nextIndex !== state.currentPlayerIndex &&
-        !players[nextIndex].influences.some(card => !card.revealed)
+        players[nextIndex].influences.every(c => c.revealed)
       ) {
         nextIndex = (nextIndex + 1) % players.length;
       }
@@ -321,15 +436,28 @@ export const useGameStore = create<GameStore>((set, get) => ({
     if (!pendingAction) return;
 
     const challengedPlayerId = pendingAction.blockingPlayerId || pendingAction.sourcePlayerId;
-    const challengedPlayer = players.find(p => p.id === challengedPlayerId);
+    const result: ChallengeResult = {
+      challengerId: pendingAction.challengingPlayerId!,
+      challengedId: challengedPlayerId,
+      successful,
+      lostInfluence: successful ? undefined : pendingAction.character
+    };
 
-    if (!challengedPlayer) return;
+    const event: GameEvent = {
+      type: 'challenge',
+      playerId: result.challengerId,
+      targetPlayerId: result.challengedId,
+      details: `Challenge ${result.successful ? 'successful' : 'failed'}`,
+      timestamp: Date.now()
+    };
+
+    set(state => ({
+      gameHistory: [...state.gameHistory, event]
+    }));
 
     if (successful) {
-      // Challenger was correct, challenged player loses influence
       set({ playerToLoseInfluence: challengedPlayerId });
     } else {
-      // Challenger was wrong, challenger loses influence
       set({ playerToLoseInfluence: pendingAction.sourcePlayerId });
     }
   },
@@ -343,7 +471,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
       gameStarted: false,
       winner: null,
       pendingAction: null,
-      playerToLoseInfluence: null
+      playerToLoseInfluence: null,
+      exchangeCards: [],
+      gameHistory: []
     });
   }
 }));
